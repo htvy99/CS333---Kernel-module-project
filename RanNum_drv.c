@@ -2,6 +2,9 @@
 #include <linux/fs.h>		//dinh nghia ham cap phat/giai phong device number
 #include <linux/device.h>	//chua cac ham phuc vu viec tao device file
 #include <linux/slab.h>		//chua cac ham kmalloc & kfree de cap phat bo nho
+#include <linux/cdev.h>		//chua cac ham lam viec voi cdev
+#include <linux/uaccess.h> 	//chua cac ham trao doi data giua user & kernel
+#include <linux/random.h>	//get_random_bytes
 
 #include "RanNum_drv.h"	//thu vien mo ta cac thanh ghi cua RandomNumber device
 
@@ -20,6 +23,8 @@ struct _vchar_drv
 	struct class *dev_class;
 	struct device *dev;
 	vchar_dev_t * vchar_hw;
+	struct cdev *vcdev;
+	unsigned int open_cnt;
 } vchar_drv;
 
 //**************** device specific - START ***************/
@@ -50,6 +55,32 @@ void vchar_hw_exit(vchar_dev_t *hw)
 }
 
 // ham doc tu cac thanh ghi du lieu cua thiet bi
+/*int vchar_hw_read_data(vchar_dev_t *hw, int start_reg, int num_regs, char* kbuf)
+{
+	int read_bytes = num_regs;
+	
+	//kiem tra quyen doc du lieu
+	if ((hw->control_regs[CONTROL_ACCESS_REG] & CTRL_READ_DATA_BIT) == DISABLE)
+		return -1;
+	//kiem tra dia chi cua kernel co hop le khong
+	if(kbuf == NULL)
+		return -1;
+	//kiem tra vi tri thanh ghi can doc
+	if(start_reg > NUM_DATA_REGS)
+		return -1;
+	//dieu chinh sl thanh ghi data can doc
+	if(num_regs > (NUM_DATA_REGS - start_reg))
+		read_bytes = NUM_DATA_REGS - start_reg;
+	//ghi du lieu tu kernel buffer vao cac thanh ghi
+	memcpy(kbuf, hw->data_regs + start_reg, read_bytes);
+
+	//cap nhat so lan doc tu thanh ghi du lieu
+	hw->status_regs[READ_COUNT_L_REG] += 1;
+	if(hw->status_regs[READ_COUNT_L_REG] == 0)
+		hw->status_regs[READ_COUNT_H_REG] += 1;
+	//tra ve so byte da doc duoc tu thanh ghi du lieu
+	return read_bytes;
+}*/
 
 // ham doc tu thanh ghi trang thai cua thiet bi
 
@@ -59,6 +90,88 @@ void vchar_hw_exit(vchar_dev_t *hw)
 
 /********************* OS specific - START ********************/
 // cac ham entry point
+static int RanNum_driver_open(struct inode *inode, struct file *filp)
+{
+	vchar_drv.open_cnt++;
+	printk("Handle open event (%d)\n", vchar_drv.open_cnt);
+	return 0;
+}
+
+static int RanNum_driver_release(struct inode *inode, struct file *filp)
+{
+	printk("Handle close event");
+	return 0;
+}
+
+/*static ssize_t RanNum_driver_read(struct file *filp, char __user *user_buf, size_t len, loff_t *off)
+{
+	char *kernel_buf = NULL;
+	int num_bytes = 0;
+	
+	printk("Handle read event start from %lld, %zu bytes\n", *off, len);
+
+	kernel_buf = kzalloc(len, GFP_KERNEL);
+	if(kernel_buf == NULL)
+		return 0;
+
+	num_bytes = vchar_hw_read_data(vchar_drv.vchar_hw, *off, len, kernel_buf);
+	printk("Read %d bytes from HW\n",num_bytes);
+
+	if(num_bytes < 0)
+		return -EFAULT;
+	if(copy_to_user(user_buf, kernel_buf, num_bytes))
+		return -EFAULT;
+
+	*off += num_bytes;
+	return num_bytes;
+}*/
+
+/*static ssize_t RanNum_driver_read(struct file *filep, char *buffer, size_t len, loff_t *offset)
+{
+    i = 0;
+    get_random_bytes(&randomNumber, sizeof(char));
+    printk(KERN_INFO "Random number is %d\n", randomNumber);
+    if (len < 4)
+    {
+        printk(KERN_INFO "\n\nRANDOMMACHINE: Failed\n");
+        return -EFAULT;
+    }
+    if (randomNumber != 0)
+    {
+	
+        while (randomNumber != 0)
+        {
+            temp[i] = randomNumber % 10 + '0';
+            randomNumber = randomNumber / 10;
+            i++;
+        }
+        temp[i] = '\0';
+        buffer[i] = '\0';
+        i -= 1;
+        while (i >= 0)
+        {
+            *buffer = temp[i];
+            i -= 1;
+            buffer += 1;
+        }
+        return 0;
+    }
+    else
+    {
+
+        *(buffer++) = '0';
+        *buffer = '\0';
+        return 0;
+    }
+}*/
+
+static struct file_operations fops = 
+{
+	.owner = THIS_MODULE,
+	.open = RanNum_driver_open,
+	.release = RanNum_driver_release,
+	//.read = RanNum_driver_read,
+};
 
 // ham khoi tao driver
 static int __init RanNum_driver_init(void)
@@ -103,12 +216,25 @@ static int __init RanNum_driver_init(void)
 	}
 
 	// dki entry points voi kernel
+	vchar_drv.vcdev = cdev_alloc();
+	if(vchar_drv.vcdev == NULL) {
+		printk("Failed to allocate cdev structure\n");
+		goto failed_allocate_cdev;
+	}
+	cdev_init(vchar_drv.vcdev, &fops);
+	ret = cdev_add(vchar_drv.vcdev, vchar_drv.dev_num, 1);
+	if(ret < 0) {
+		printk("Failed to add a char device to the system\n");
+		goto failed_allocate_cdev;
+	}
 
 	// dki ham xu ly ngat
 
 	printk("Initialize RanNum driver successfully\n");
 	return 0;
 
+failed_allocate_cdev:
+	vchar_hw_exit(vchar_drv.vchar_hw);
 failed_init_hw:
 	kfree(vchar_drv.vchar_hw);
 failed_allocate_structure:
@@ -126,7 +252,8 @@ static void __exit RanNum_driver_exit(void)
 {
 	//huy dang ky xu li ngat
 	
-	//huy dang ky entry point voi kerel
+	//huy dang ky entry point voi kernel
+	cdev_del(vchar_drv.vcdev);
 
 	//giai phong thiet bi vat ly
 	vchar_hw_exit(vchar_drv.vchar_hw);
