@@ -11,6 +11,7 @@
 #define DRIVER_AUTHOR "Vy Huynh <1751027> | Trinh Ngo <nlptrinh@apcs.vn> | Truc Nguyen <1751112>"
 #define DRIVER_DESC "Generate random number module"
 
+char kernel_buffer[4] = {'\0'};
 typedef struct vchar_dev {
 	unsigned char * control_regs;
 	unsigned char * status_regs;
@@ -103,35 +104,49 @@ static int RanNum_driver_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-/*static ssize_t RanNum_driver_read(struct file *filp, char __user *user_buf, size_t len, loff_t *off)
+static ssize_t RanNum_driver_read(struct file *filp, char *user_buffer, size_t len, loff_t *offset)
 {
-	char *kernel_buf = NULL;
-	int num_bytes = 0;
+	int randomNumber;
+	int i = 4; //kernel buffer size, 3 slot for number, 1 slot for terminator
 	
-	printk("Handle read event start from %lld, %zu bytes\n", *off, len);
+	printk("Handle read event"); 
+    	get_random_bytes(&randomNumber, sizeof(randomNumber));
+	randomNumber %= 1000;
 
-	kernel_buf = kzalloc(len, GFP_KERNEL);
-	if(kernel_buf == NULL)
-		return 0;
+	printk(KERN_INFO "Random number is %d\n", randomNumber);
 
-	num_bytes = vchar_hw_read_data(vchar_drv.vchar_hw, *off, len, kernel_buf);
-	printk("Read %d bytes from HW\n",num_bytes);
+	if(randomNumber != 0)
+	{
+		if(randomNumber < 0)
+			randomNumber += 1000;		
+	}
+	i -= 2;
+	while (randomNumber > 0)
+	{
+		kernel_buffer[i] = randomNumber % 10 + '0';
+		randomNumber /= 10;
+		--i;
+	}
 
-	if(num_bytes < 0)
+	//num_bytes = vchar_hw_read_data(vchar_drv.vchar_hw, *off, len, kernel_buf);
+	//printk("Read %d bytes from HW\n",num_bytes);
+
+	/*if(num_bytes < 0)
+		return -EFAULT;*/
+	printk(KERN_INFO "Random number is [Kernel_buffer] %s\n", kernel_buffer);
+	//copy_to_user(user_buffer, kernel_buffer, len);
+	if(copy_to_user(user_buffer, kernel_buffer, len))
 		return -EFAULT;
-	if(copy_to_user(user_buf, kernel_buf, num_bytes))
-		return -EFAULT;
 
-	*off += num_bytes;
-	return num_bytes;
-}*/
+	return 0;
+}
 
 /*static ssize_t RanNum_driver_read(struct file *filep, char *buffer, size_t len, loff_t *offset)
 {
-    i = 0;
-    get_random_bytes(&randomNumber, sizeof(char));
-    printk(KERN_INFO "Random number is %d\n", randomNumber);
-    if (len < 4)
+    int i = 0;
+    int randomNumber;
+    get_random_bytes(&randomNumber, sizeof(randomNumber));
+    if (copy_to_user(buffer, kernel_buffer, len))
     {
         printk(KERN_INFO "\n\nRANDOMMACHINE: Failed\n");
         return -EFAULT;
@@ -163,6 +178,8 @@ static int RanNum_driver_release(struct inode *inode, struct file *filp)
         *buffer = '\0';
         return 0;
     }
+	printk(KERN_INFO "Random number is %d\n", randomNumber);
+	return 0;
 }*/
 
 static struct file_operations fops = 
@@ -170,7 +187,7 @@ static struct file_operations fops =
 	.owner = THIS_MODULE,
 	.open = RanNum_driver_open,
 	.release = RanNum_driver_release,
-	//.read = RanNum_driver_read,
+	.read = RanNum_driver_read,
 };
 
 // ham khoi tao driver
